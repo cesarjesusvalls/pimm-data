@@ -24,6 +24,7 @@ from .collate import collate_fn, point_collate_fn, inseg_collate_fn
 # Dataset classes (register themselves)
 from .jaxtpc import JAXTPCDataset
 from .lucid import LUCiDDataset
+from .nd280 import ND280Dataset
 from .optical import OpticalDataset
 from .pilarnet import PILArNetH5Dataset
 from .multimodal import MultiModalEventDataset
@@ -40,6 +41,7 @@ from . import detector_transforms  # noqa: F401
 from .readers import (
     JAXTPCStepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
     LUCiDStepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
+    ND280StepReader, ND280SensorReader, ND280HitsReader, ND280LablReader,
     OpticalSensorReader, OpticalEastWestReader,
 )
 from ._joint_index import build_joint_index
@@ -73,6 +75,7 @@ __all__ = [
     "inseg_collate_fn",
     "JAXTPCDataset",
     "LUCiDDataset",
+    "ND280Dataset",
     "OpticalDataset",
     "PILArNetH5Dataset",
     "MultiModalEventDataset",
@@ -85,6 +88,10 @@ __all__ = [
     "LUCiDSensorReader",
     "LUCiDHitsReader",
     "LUCiDLablReader",
+    "ND280StepReader",
+    "ND280SensorReader",
+    "ND280HitsReader",
+    "ND280LablReader",
     "OpticalSensorReader",
     "OpticalEastWestReader",
     "build_joint_index",

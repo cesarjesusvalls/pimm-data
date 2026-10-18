@@ -19,7 +19,7 @@ import os
 import pytest
 
 from pimm_data.testing import (make_jaxtpc_sample, make_lucid_sample,
-                               make_optical_sample)
+                               make_nd280_sample, make_optical_sample)
 
 _REQUIRED_SUBDIRS = ('step', 'sensor', 'hits', 'labl')
 
@@ -63,10 +63,11 @@ def pytest_collection_modifyitems(config, items):
     We apply the skip if *both* env vars are unset, which covers the
     fresh-clone / CI case where nothing is available.
     """
-    if os.environ.get('JAXTPC_DATA_ROOT') or os.environ.get('LUCID_DATA_ROOT'):
+    if (os.environ.get('JAXTPC_DATA_ROOT') or os.environ.get('LUCID_DATA_ROOT')
+            or os.environ.get('ND280_DATA_ROOT')):
         return
     skip_marker = pytest.mark.skip(
-        reason="real_data_only: set JAXTPC_DATA_ROOT or LUCID_DATA_ROOT")
+        reason="real_data_only: set JAXTPC_DATA_ROOT, LUCID_DATA_ROOT or ND280_DATA_ROOT")
     for item in items:
         if 'real_data_only' in item.keywords:
             item.add_marker(skip_marker)
@@ -157,3 +158,10 @@ def jaxtpc_is_synthetic():
 def lucid_is_synthetic():
     """True when the LUCiD fixture falls back to the synthesizer."""
     return 'LUCID_DATA_ROOT' not in os.environ
+
+
+@pytest.fixture(scope='session')
+def nd280_data_root(tmp_path_factory):
+    path, _ = _resolve_root('ND280_DATA_ROOT', tmp_path_factory,
+                            make_nd280_sample, 'nd280_synth')
+    return path

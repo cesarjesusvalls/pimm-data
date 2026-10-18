@@ -7,6 +7,7 @@ Reads simulation output produced by:
 - **JAXTPC** — Liquid Argon TPC simulation (`step` / `sensor` / `hits` / `labl` HDF5)
 - **LUCiD** — Water Cherenkov / PhotonSim simulation (`step` / `sensor` / `hits` / `labl` HDF5, `format_version >= 3`)
 - **Optical** — PMT light (goop) output as per-chunk waveforms (`OpticalDataset`; label & east/west schemas)
+- **ND280** — T2K ND280 simulation, original and upgraded detector (`step` / `sensor` / `hits` / `labl` HDF5, `format_version 1`, produced by [nd280-viewer](https://github.com/cesarjesusvalls/nd280-viewer))
 
 Datasets inherit from `torch.utils.data.Dataset`. `get_data(idx)` returns a
 nested `dict[str, dict[str, np.ndarray]]` sample (one sub-dict per modality);
@@ -42,6 +43,26 @@ ds = LUCiDDataset(data_root="/path/to/wc_data", modalities=("sensor",))
 sample = ds.get_data(0)
 print(sample["sensor"].keys())   # coord, energy, time, sensor_idx
 ```
+
+### Load an ND280 dataset
+
+```python
+from pimm_data import ND280Dataset
+
+ds = ND280Dataset(data_root="/path/to/nd280_data",
+                  modalities=("sensor", "hits", "labl"),
+                  subdets=(9, 2))          # optional: SuperFGD + TPC only
+sample = ds.get_data(0)
+print(sample["hits"].keys())     # coord, energy, time, sensor_idx, digit_idx, subdet,
+                                 # axis, half_size, contribution_type, particle_idx,
+                                 # instance, segment (= primary PDG)
+print(ds.detector_geometry["baseline"])   # e.g. '2010-11' or '2024'
+```
+
+All sub-detectors share one sensor table (bars, SuperFGD fibres, TPC/HA-TPC pad
+drift columns): `coord` is the readout element's centre, `axis` its long
+(unmeasured) axis, `half_size` its extent. Units are mm, ns, MeV. Schema:
+nd280-viewer `docs/dataset-schema.md`.
 
 ### Load an Optical (PMT light) dataset
 
@@ -354,6 +375,7 @@ need per-vertex grouping.
 | JAXTPC  | `step`   | `track_id` (raw Geant4 track ID) |
 | JAXTPC  | `hits`   | `group_id` (hits' native grouping) |
 | LUCiD   | both     | `particle_idx` (FK into labl.particle) |
+| ND280   | both     | `particle_idx` (Geant4 primary; FK into labl.particle) |
 
 If a task needs uniform instance convention, remap in a transform.
 
@@ -363,6 +385,7 @@ If a task needs uniform instance convention, remap in a transform.
 |---------|--------|------------|
 | JAXTPC  | `track_{label_key}` | PDG codes (default), cluster IDs, etc. |
 | LUCiD   | `labl.particle.category` | Detector-specific category integers |
+| ND280   | `labl.particle.pdg` | PDG code of the primary (noise → `ignore_index`) |
 
 Use `RemapSegment` to map raw values to dense class indices:
 

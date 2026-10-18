@@ -752,4 +752,207 @@ def make_optical_sample(outdir, dataset_name='optical', n_events=2, n_files=1,
     return outdir
 
 
-__all__ = ['make_jaxtpc_sample', 'make_lucid_sample', 'make_optical_sample']
+
+# ---------------------------------------------------------------------------
+# ND280 (nd280-viewer docs/dataset-schema.md, format_version 1)
+# ---------------------------------------------------------------------------
+
+_ND280_PDG_POOL = np.array([13, 211, 2212, 11, 22, 2112], dtype=np.int32)
+
+# Small sensor table: (subdet, axis, centre, half-size, end) per sensor —
+# TPC pads (drift columns), SuperFGD fibres of the three views, FGD bars and
+# double-ended DsECal bars.
+def _nd280_sensor_table():
+    rows = []
+    for k in range(6):   # TPC pads (axis x = drift)
+        rows.append((2, 0, (455.0, -300.0 + 7.0 * k, 600.0), (448.5, 3.5, 4.9), 0))
+    for k in range(4):   # SuperFGD XZ (∥y), YZ (∥x), XY (∥z) fibres
+        rows.append((9, 1, (-50.0 + 10.3 * k, -20.0, -1900.0), (5.15, 288.8, 5.15), 0))
+        rows.append((9, 0, (0.0, -100.0 + 10.3 * k, -1900.0), (988.9, 5.15, 5.15), 0))
+        rows.append((9, 2, (-50.0 + 10.3 * k, -100.0, -1929.0), (5.15, 5.15, 937.4), 0))
+    for k in range(4):   # FGD bars (X layer ∥ y, Y layer ∥ x)
+        rows.append((3, 1, (-20.0 + 9.6 * k, 55.0, 200.0), (4.8, 932.0, 4.8), 0))
+        rows.append((3, 0, (0.0, -20.0 + 9.6 * k, 210.0), (932.0, 4.8, 4.8), 0))
+    for end in (-1, 1):  # one DsECal bar read at both ends
+        rows.append((4, 0, (0.0, -970.0, 2860.0), (1000.0, 5.0, 20.0), end))
+    n = len(rows)
+    geom_id = np.arange(1, n + 1, dtype=np.uint32) * 16
+    geom_id[-1] = geom_id[-2]                      # both ends share the bar id
+    return {
+        'geom_id': geom_id,
+        'end': np.array([r[4] for r in rows], dtype=np.int8),
+        'subdet': np.array([r[0] for r in rows], dtype=np.uint8),
+        'module': np.zeros(n, dtype=np.uint16),
+        'view': np.array([r[1] for r in rows], dtype=np.uint8),
+        'axis': np.array([r[1] for r in rows], dtype=np.uint8),
+        'positions': np.array([r[2] for r in rows], dtype=np.float32),
+        'half_size': np.array([r[3] for r in rows], dtype=np.float32),
+    }
+
+
+def _build_nd280_event(rng, sensors, n_particles, n_segments, n_hits):
+    """One schema-consistent event: tracks → segments → sensor hits with
+    per-particle shares summing to each hit charge, plus noise hits."""
+    n_sensors = len(sensors['geom_id'])
+    pdg = rng.choice(_ND280_PDG_POOL, size=n_particles).astype(np.int32)
+    n_tracks = n_particles + int(rng.integers(0, 3))
+    trk_particle = np.concatenate([np.arange(n_particles),
+                                   rng.integers(0, n_particles, n_tracks - n_particles)]).astype(np.int32)
+    track_id = np.arange(1, n_tracks + 1, dtype=np.int32)
+    parent = np.where(np.arange(n_tracks) < n_particles, 0, track_id[trk_particle]).astype(np.int32)
+
+    seg_track = rng.integers(0, n_tracks, n_segments).astype(np.int32)
+    start = rng.uniform(-500, 500, (n_segments, 3)).astype(np.float32)
+    end = (start + rng.uniform(-5, 5, (n_segments, 3))).astype(np.float32)
+    edep = rng.uniform(0.1, 3.0, n_segments).astype(np.float32)
+    seg_subdet = sensors['subdet'][rng.integers(0, n_sensors, n_segments)]
+
+    sensor_idx = np.sort(rng.integers(0, n_sensors, n_hits)).astype(np.int32)
+    Q = rng.uniform(1, 100, n_hits).astype(np.float32)
+    T = rng.uniform(0, 4000, n_hits).astype(np.float32)
+    n_noise = max(1, n_hits // 4)
+    links = []  # (digit, segment, share, direct)
+    for d in range(n_hits - n_noise):
+        segs = rng.choice(n_segments, size=int(rng.integers(1, 4)), replace=False)
+        w = edep[segs] / edep[segs].sum()
+        for s, f in zip(segs, w):
+            links.append((d, int(s), float(f), int(rng.random() < 0.8)))
+    l_digit = np.array([l[0] for l in links], dtype=np.int32)
+    l_seg = np.array([l[1] for l in links], dtype=np.int32)
+    l_q = (Q[l_digit] * np.array([l[2] for l in links])).astype(np.float32)
+    l_type = np.where(np.array([l[3] for l in links]) == 1, 0, 1).astype(np.int8)
+
+    l_particle = trk_particle[seg_track[l_seg]]
+    key = l_digit.astype(np.int64) * (n_particles + 1) + l_particle
+    uniq, inv = np.unique(key, return_inverse=True)
+    h_digit = (uniq // (n_particles + 1)).astype(np.int32)
+    h_particle = (uniq % (n_particles + 1)).astype(np.int32)
+    h_q = np.bincount(inv, weights=l_q, minlength=len(uniq)).astype(np.float32)
+    h_type = np.full(len(uniq), 1, dtype=np.int8)
+    np.minimum.at(h_type, inv, l_type)
+    noise = np.arange(n_hits - n_noise, n_hits, dtype=np.int32)
+    h_digit = np.concatenate([h_digit, noise])
+    h_particle = np.concatenate([h_particle, np.full(n_noise, -1, np.int32)])
+    h_q = np.concatenate([h_q, Q[noise]]).astype(np.float32)
+    h_type = np.concatenate([h_type, np.full(n_noise, 2, np.int8)])
+    h_t = np.where(h_particle >= 0, T[h_digit] - 2.0, np.nan).astype(np.float32)
+
+    pad = sensors['subdet'][sensor_idx] == 2   # waveforms on TPC pads
+    lengths = np.where(pad, 5, 0)
+    w_off = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int32)
+    return {
+        'pdg': pdg, 'track_id': track_id, 'parent': parent, 'trk_particle': trk_particle,
+        'seg_track': seg_track, 'start': start, 'end': end, 'edep': edep, 'seg_subdet': seg_subdet,
+        'sensor_idx': sensor_idx, 'Q': Q, 'T': T,
+        'w_off': w_off, 'w_q': rng.uniform(0, 20, w_off[-1]).astype(np.float32),
+        'w_t': rng.uniform(0, 4000, w_off[-1]).astype(np.float32),
+        'h': (h_digit, h_particle, h_q, h_t, h_type, sensor_idx[h_digit]),
+        'l': (l_seg, l_digit, sensor_idx[l_digit], l_q, l_type),
+    }
+
+
+def make_nd280_sample(outdir, dataset_name='nd280', n_events=3, n_files=1, seed=0):
+    """Write a small synthetic ND280 dataset (all four modalities).
+
+    Cross-modality invariants encoded here (tests rely on them):
+    ``sum(hits.Q over a digit) == sensor.Q``; ``sum(step/sensor_hits.Q over a
+    linked digit) == sensor.Q``; noise rows have ``particle_idx = -1`` and
+    ``contribution_type = 2``; every track has a particle.
+    """
+    rng = np.random.default_rng(seed)
+    sensors = _nd280_sensor_table()
+    volumes = {'name': ['active/TPC/0', 'active/SFG/0', 'Basket_0/SFG_0'],
+               'subdet': np.array([2, 9, 9], np.uint8), 'role': np.array([0, 0, 2], np.uint8),
+               'center': np.array([[455, -300, 600], [0, -20, -1929], [0, -20, -1929]], np.float32),
+               'half_size': np.array([[448, 400, 400], [989, 289, 937], [1282, 365, 982]], np.float32)}
+    for m in ('step', 'sensor', 'hits', 'labl'):
+        os.makedirs(os.path.join(outdir, m), exist_ok=True)
+    gidx = 0
+    for fi in range(n_files):
+        events = [_build_nd280_event(rng, sensors, int(rng.integers(1, 4)),
+                                     int(rng.integers(20, 60)), int(rng.integers(12, 30)))
+                  for _ in range(n_events)]
+        files = {m: h5py.File(os.path.join(outdir, m, f'{dataset_name}_{m}_{fi:04d}.h5'), 'w')
+                 for m in ('step', 'sensor', 'hits', 'labl')}
+        for m, f in files.items():
+            cfg = f.create_group('config')
+            cfg.attrs.update(format_version=1, dataset_name=dataset_name, file_index=fi,
+                             n_events=n_events, baseline='2024', geometry_hash='synthetic',
+                             length_unit='mm', time_unit='ns', energy_unit='MeV')
+            cfg.create_dataset('source_event_idx', data=np.arange(gidx, gidx + n_events, dtype=np.uint32))
+            if m in ('sensor', 'hits'):
+                cfg.attrs['n_sensors'] = len(sensors['geom_id'])
+                for k, v in sensors.items():
+                    cfg.create_dataset(f'sensor_{k}', data=v)
+        g = files['step']['config'].create_group('geometry')
+        for k, v in volumes.items():
+            g.create_dataset(f'volume_{k}', data=v)
+        files['labl']['config'].attrs['label_names'] = ['pdg']
+        for i, e in enumerate(events):
+            key, src = f'event_{i:03d}', gidx + i
+            s = files['sensor'].create_group(key)
+            s.attrs.update(source_event_idx=src, n_hits=len(e['Q']))
+            for k in ('sensor_idx', 'Q', 'T'):
+                s.create_dataset(k, data=e[k])
+            w = s.create_group('waveforms')
+            w.create_dataset('offsets', data=e['w_off'])
+            w.create_dataset('q', data=e['w_q'])
+            w.create_dataset('t', data=e['w_t'])
+            h = files['hits'].create_group(key)
+            h.attrs.update(source_event_idx=src, n_particles=len(e['pdg']), n_particle_hits=len(e['h'][0]))
+            for k, v in zip(('digit_idx', 'particle_idx', 'Q', 'T_true', 'contribution_type', 'sensor_idx'), e['h']):
+                h.create_dataset(k, data=v)
+            st = files['step'].create_group(key)
+            st.attrs.update(source_event_idx=src, n_tracks=len(e['track_id']), n_segments=len(e['edep']))
+            n_seg = len(e['edep'])
+            cols = {'track_idx': e['seg_track'], 'subdet': e['seg_subdet'],
+                    'geom_id': np.zeros(n_seg, np.uint32),
+                    'start_t': np.zeros(n_seg, np.float32), 'end_t': np.ones(n_seg, np.float32),
+                    'edep': e['edep'], 'edep_vis': 0.95 * e['edep'], 'length': np.full(n_seg, 3.0, np.float32),
+                    'contrib_offsets': np.arange(n_seg + 1, dtype=np.int32), 'contrib_track_idx': e['seg_track']}
+            for a, c in enumerate('xyz'):
+                cols[f'start_{c}'] = e['start'][:, a]
+                cols[f'end_{c}'] = e['end'][:, a]
+            for k, v in cols.items():
+                st.create_dataset(k, data=v)
+            sh = st.create_group('sensor_hits')
+            for k, v in zip(('segment_idx', 'digit_idx', 'sensor_idx', 'Q', 'contribution_type'), e['l']):
+                sh.create_dataset(k, data=v)
+            lb = files['labl'].create_group(key)
+            lb.attrs.update(source_event_idx=src, n_interactions=1, n_particles=len(e['pdg']),
+                            n_tracks=len(e['track_id']))
+            lb.create_group('per_event').create_dataset('t0', data=np.float32(100.0))
+            pi = lb.create_group('per_interaction')
+            np_ = len(e['pdg'])
+            for k, v in {'source_type': np.zeros(1, np.uint8), 'reaction_code': np.zeros(1, np.int32),
+                         't0': np.array([100.0], np.float32), 'vertex_x': np.zeros(1, np.float32),
+                         'vertex_y': np.zeros(1, np.float32), 'vertex_z': np.zeros(1, np.float32),
+                         'vertex_subdet': np.array([9], np.uint8), 'neutrino_pdg': np.zeros(1, np.int32),
+                         'neutrino_energy_MeV': np.zeros(1, np.float32), 'target_pdg': np.zeros(1, np.int32),
+                         'n_primaries': np.array([np_], np.int32), 'n_particles': np.array([np_], np.int32),
+                         'primary_pdgs_offsets': np.array([0, np_], np.int32), 'primary_pdgs_data': e['pdg']}.items():
+                pi.create_dataset(k, data=v)
+            pi.create_dataset('generator', data=['gps:synthetic'], dtype=h5py.string_dtype())
+            pi.create_dataset('reaction', data=[''], dtype=h5py.string_dtype())
+            pp = lb.create_group('per_particle')
+            for k, v in {'pdg': e['pdg'], 'track_id': e['track_id'][:np_],
+                         'interaction_idx': np.zeros(np_, np.int32),
+                         'initial_energy': rng.uniform(50, 1000, np_).astype(np.float32),
+                         'edep': np.bincount(e['trk_particle'][e['seg_track']], weights=e['edep'],
+                                             minlength=np_).astype(np.float32)}.items():
+                pp.create_dataset(k, data=v)
+            pt = lb.create_group('per_track')
+            for k, v in {'track_id': e['track_id'], 'parent_id': e['parent'],
+                         'pdg': np.concatenate([e['pdg'], np.full(len(e['track_id']) - np_, 11, np.int32)]),
+                         'particle_idx': e['trk_particle'],
+                         'ancestor': e['track_id'][e['trk_particle']],
+                         'interaction': np.zeros(len(e['track_id']), np.int32)}.items():
+                pt.create_dataset(k, data=v)
+        for f in files.values():
+            f.close()
+        gidx += n_events
+    return outdir
+
+
+__all__ = ['make_jaxtpc_sample', 'make_lucid_sample', 'make_optical_sample',
+           'make_nd280_sample']

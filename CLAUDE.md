@@ -12,6 +12,7 @@ pytest tests/test_jaxtpc.py::test_name    # single test
 # Run against real production datasets instead of synthetic fixtures:
 JAXTPC_DATA_ROOT=/path/to/jaxtpc pytest
 LUCID_DATA_ROOT=/path/to/wc    pytest
+ND280_DATA_ROOT=/path/to/nd280 pytest tests/test_nd280.py
 JAXTPC_PIXEL_DATA_ROOT=/path/to/pixel pytest tests/test_jaxtpc_pixel.py
 ```
 
@@ -136,6 +137,16 @@ JAXTPC also returns a top-level `bridges` sub-dict containing
   dense class indices.
 - **LUCiD** requires `format_version >= 3` shards. `instance` is
   `particle_idx`; `segment` is `labl.particle.category`.
+- **ND280** (`nd280.py`, `readers/nd280_*.py`) reads the T2K ND280 dataset
+  produced by `cesarjesusvalls/nd280-viewer` (`format_version 1`, schema in
+  that repo's `docs/dataset-schema.md`). One sensor table for all
+  sub-detectors (`config/sensor_*`: positions, half_size, axis, subdet, …),
+  shared by sensor/ and hits/; `instance = particle_idx` (a Geant4 primary),
+  `segment = labl.particle.pdg`. `subdets=` filters step/sensor/hits by
+  sub-detector code (ND::GeomId::Def); `include_noise=False` drops hits rows
+  with `contribution_type == 2`; TPC/HA-TPC waveforms are a packed CSR
+  (`wave_offsets`, `wave_q`, `wave_t`). Synthetic fixture:
+  `testing.make_nd280_sample`; real data via `ND280_DATA_ROOT`.
 - **Optical** (`optical.py`, `readers/optical_sensor.py`) reads goop PMT-light
   output as per-**chunk** waveforms. Two selectable schemas (`OpticalDataset(
   schema=...)`), same per-chunk fields: `'label'` (goop `io.py` writer /
